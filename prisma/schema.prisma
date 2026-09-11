@@ -1,0 +1,192 @@
+// Mediavy — Field Force Plan vs Actual / HCP Engagement / Share Mapping
+//
+// SQLite is used as the local/dev datasource so the app runs out of the box
+// with zero external setup. The schema only uses types & relations that are
+// portable to Postgres — to move to a real Postgres/Supabase instance later,
+// change `provider` below to "postgresql" and point DATABASE_URL at it, then
+// run `npx prisma migrate deploy`.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Org structure
+// ---------------------------------------------------------------------------
+
+model Region {
+  id         String       @id @default(cuid())
+  name       String       @unique
+  code       String       @unique
+  fieldForce FieldForce[]
+  hcps       Hcp[]
+  chemists   Chemist[]
+
+  createdAt DateTime @default(now())
+}
+
+model FieldForce {
+  id             String   @id @default(cuid())
+  employeeCode   String   @unique
+  name           String
+  designation    String // e.g. "Medical Rep", "Senior MR", "Area Manager"
+  region         Region   @relation(fields: [regionId], references: [id])
+  regionId       String
+
+  hcps        Hcp[]
+  callPlans   CallPlan[]
+  callActuals CallActual[]
+  engagements Engagement[]
+
+  createdAt DateTime @default(now())
+
+  @@index([regionId])
+}
+
+// ---------------------------------------------------------------------------
+// Master data
+// ---------------------------------------------------------------------------
+
+model Hcp {
+  id          String   @id @default(cuid())
+  name        String
+  specialty   String
+  tier        String // A / B / C potential tier
+  region      Region   @relation(fields: [regionId], references: [id])
+  regionId    String
+  fieldForce  FieldForce @relation(fields: [fieldForceId], references: [id])
+  fieldForceId String
+
+  chemistLinks HcpChemistLink[]
+  callPlans    CallPlan[]
+  callActuals  CallActual[]
+  engagements  Engagement[]
+  shares       ShareMapping[]
+
+  createdAt DateTime @default(now())
+
+  @@index([regionId])
+  @@index([fieldForceId])
+}
+
+model Sku {
+  id       String @id @default(cuid())
+  name     String @unique
+  brand    String
+  category String
+
+  engagements Engagement[]
+  shares      ShareMapping[]
+
+  createdAt DateTime @default(now())
+}
+
+model Chemist {
+  id       String @id @default(cuid())
+  name     String
+  tier     String // e.g. "Key", "Standard"
+  region   Region @relation(fields: [regionId], references: [id])
+  regionId String
+
+  hcpLinks HcpChemistLink[]
+  shares   ShareMapping[]
+
+  createdAt DateTime @default(now())
+
+  @@index([regionId])
+}
+
+// Many-to-many mapping between HCPs and the chemists that fulfil their
+// prescriptions, with a primary flag for the main fulfilling chemist.
+model HcpChemistLink {
+  id        String  @id @default(cuid())
+  hcp       Hcp     @relation(fields: [hcpId], references: [id])
+  hcpId     String
+  chemist   Chemist @relation(fields: [chemistId], references: [id])
+  chemistId String
+  isPrimary Boolean @default(false)
+
+  @@unique([hcpId, chemistId])
+  @@index([chemistId])
+}
+
+// ---------------------------------------------------------------------------
+// Field-force activity: plan vs actual calls
+// ---------------------------------------------------------------------------
+
+// One row per FF x HCP x period (period = "YYYY-MM")
+model CallPlan {
+  id           String     @id @default(cuid())
+  period       String
+  fieldForce   FieldForce @relation(fields: [fieldForceId], references: [id])
+  fieldForceId String
+  hcp          Hcp        @relation(fields: [hcpId], references: [id])
+  hcpId        String
+  plannedCalls Int
+
+  @@unique([fieldForceId, hcpId, period])
+  @@index([period])
+  @@index([hcpId])
+}
+
+model CallActual {
+  id           String     @id @default(cuid())
+  period       String
+  fieldForce   FieldForce @relation(fields: [fieldForceId], references: [id])
+  fieldForceId String
+  hcp          Hcp        @relation(fields: [hcpId], references: [id])
+  hcpId        String
+  actualCalls  Int
+
+  @@unique([fieldForceId, hcpId, period])
+  @@index([period])
+  @@index([hcpId])
+}
+
+// ---------------------------------------------------------------------------
+// HCP engagement: count & value, per engagement type
+// ---------------------------------------------------------------------------
+
+model Engagement {
+  id           String     @id @default(cuid())
+  period       String
+  fieldForce   FieldForce @relation(fields: [fieldForceId], references: [id])
+  fieldForceId String
+  hcp          Hcp        @relation(fields: [hcpId], references: [id])
+  hcpId        String
+  sku          Sku?       @relation(fields: [skuId], references: [id])
+  skuId        String?
+  type         String // "Detailing" | "Sampling" | "CME" | "RTM" | "Group Meeting"
+  count        Int // number of engagements of this type in the period
+  value        Float // business/Rx value attributed (currency)
+
+  @@index([period])
+  @@index([hcpId])
+  @@index([fieldForceId])
+}
+
+// ---------------------------------------------------------------------------
+// Share mapping: HCP x SKU x Chemist prescription value & brand share
+// ---------------------------------------------------------------------------
+
+model ShareMapping {
+  id          String  @id @default(cuid())
+  period      String
+  hcp         Hcp     @relation(fields: [hcpId], references: [id])
+  hcpId       String
+  sku         Sku     @relation(fields: [skuId], references: [id])
+  skuId       String
+  chemist     Chemist @relation(fields: [chemistId], references: [id])
+  chemistId   String
+  brandValue  Float // our brand's Rx value fulfilled via this chemist
+  marketValue Float // total category Rx value for this HCP/SKU-category/chemist
+
+  @@unique([hcpId, skuId, chemistId, period])
+  @@index([period])
+  @@index([hcpId])
+}
